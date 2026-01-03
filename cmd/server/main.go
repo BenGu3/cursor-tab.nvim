@@ -16,11 +16,12 @@ import (
 var cursorClient *cursor.Client
 
 type SuggestionRequest struct {
-	FileContents string `json:"file_contents"`
-	Line         int32  `json:"line"`
-	Column       int32  `json:"column"`
-	FilePath     string `json:"file_path"`
-	LanguageID   string `json:"language_id"`
+	FileContents  string `json:"file_contents"`
+	Line          int32  `json:"line"`
+	Column        int32  `json:"column"`
+	FilePath      string `json:"file_path"`
+	LanguageID    string `json:"language_id"`
+	WorkspacePath string `json:"workspace_path"`
 }
 
 type SuggestionResponse struct {
@@ -53,12 +54,15 @@ func handleSuggestion(w http.ResponseWriter, r *http.Request) {
 	lines := strings.Split(req.FileContents, "\n")
 	totalLines := int32(len(lines))
 
+	log.Printf("Workspace: %s", req.WorkspacePath)
+
 	streamReq := &aiserverv1.StreamCppRequest{
 		CurrentFile: &aiserverv1.CurrentFileInfo{
 			Contents:              req.FileContents,
 			RelativeWorkspacePath: req.FilePath,
 			LanguageId:            req.LanguageID,
 			TotalNumberOfLines:    totalLines,
+			WorkspaceRootPath:     req.WorkspacePath,
 			CursorPosition: &aiserverv1.CursorPosition{
 				Line:   req.Line,
 				Column: req.Column,

@@ -121,12 +121,15 @@ function M.get_suggestion(callback)
 	local line = cursor[1] - 1
 	local col = cursor[2]
 
+	local workspace_path = vim.fn.getcwd()
+
 	local req = {
 		file_contents = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n"),
 		line = line,
 		column = col,
 		file_path = vim.fn.expand("%:p"),
 		language_id = vim.bo.filetype,
+		workspace_path = workspace_path,
 	}
 
 	local json_data = vim.fn.json_encode(req)
