@@ -76,15 +76,28 @@ function M.ensure_rpc_server()
 	return M.rpc_channel
 end
 
-function M.get_suggestion(line_text, callback)
+function M.get_suggestion(callback)
 	local channel = M.ensure_rpc_server()
 	if not channel then
 		if callback then callback(nil) end
 		return
 	end
 
+	local bufnr = vim.api.nvim_get_current_buf()
+	local cursor = vim.api.nvim_win_get_cursor(0)
+	local line = cursor[1] - 1
+	local col = cursor[2]
+
+	local req = {
+		file_contents = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n"),
+		line = line,
+		column = col,
+		file_path = vim.fn.expand("%:p"),
+		language_id = vim.bo.filetype,
+	}
+
 	vim.schedule(function()
-		local success, result = pcall(vim.rpcrequest, channel, "get_suggestion", line_text)
+		local success, result = pcall(vim.rpcrequest, channel, "get_suggestion", req)
 
 		if success and result and result ~= "" then
 			if callback then
@@ -108,9 +121,8 @@ function M.show_suggestion()
 
 	local line = vim.api.nvim_win_get_cursor(0)[1] - 1
 	local col = vim.api.nvim_win_get_cursor(0)[2]
-	local line_text = vim.api.nvim_get_current_line()
 
-	M.get_suggestion(line_text:sub(1, col), function(suggestion)
+	M.get_suggestion(function(suggestion)
 		M.fetching = false
 
 		if not suggestion then

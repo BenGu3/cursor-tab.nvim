@@ -1,0 +1,312 @@
+syntax = "proto3";
+
+package aiserver.v1;
+
+enum ControlToken {
+  CONTROL_TOKEN_UNSPECIFIED = 0;
+  CONTROL_TOKEN_QUIET = 1;
+  CONTROL_TOKEN_LOUD = 2;
+  CONTROL_TOKEN_OP = 3;
+}
+
+enum DiagnosticSeverity {
+  DIAGNOSTIC_SEVERITY_UNSPECIFIED = 0;
+  DIAGNOSTIC_SEVERITY_ERROR = 1;
+  DIAGNOSTIC_SEVERITY_WARNING = 2;
+  DIAGNOSTIC_SEVERITY_INFORMATION = 3;
+  DIAGNOSTIC_SEVERITY_HINT = 4;
+}
+
+message CppParameterHint {
+  string label = 1;
+  optional string documentation = 2;
+}
+
+message CppFileDiffHistory {
+  string file_name = 1;
+  repeated string diff_history = 2;
+  repeated double diff_history_timestamps = 3;
+}
+
+message ModelInfo {
+  bool is_fused_cursor_prediction_model = 1;
+  bool is_multidiff_model = 2;
+}
+
+message CursorPosition {
+  int32 line = 1;
+  int32 column = 2;
+}
+
+message LspSuggestion {
+  string label = 1;
+}
+
+message StreamCppRequest {
+  CurrentFileInfo current_file = 1;
+  repeated string diff_history = 2;
+  optional string model_name = 3;
+  optional LinterErrors linter_errors = 4;
+  repeated CppContextItem context_items = 13;
+  repeated string diff_history_keys = 5;
+  optional bool give_debug_output = 6;
+  repeated CppFileDiffHistory file_diff_histories = 7;
+  repeated CppFileDiffHistory merged_diff_histories = 8;
+  repeated BlockDiffPatch block_diff_patches = 9;
+  optional bool is_nightly = 10;
+  optional bool is_debug = 11;
+  optional bool immediately_ack = 12;
+  optional bool enable_more_context = 17;
+  repeated CppParameterHint parameter_hints = 14;
+  repeated LspSubgraphFullContext lsp_contexts = 15;
+  optional CppIntentInfo cpp_intent_info = 16;
+  optional string workspace_id = 18;
+  repeated AdditionalFile additional_files = 19;
+  optional ControlToken control_token = 20;
+  optional double client_time = 21;
+  repeated FilesyncUpdateWithModelVersion filesync_updates = 22;
+  double time_since_request_start = 23;
+  double time_at_request_send = 24;
+  optional double client_timezone_offset = 25;
+  optional LspSuggestedItems lsp_suggested_items = 26;
+  optional bool supports_cpt = 27;
+  optional bool supports_crlf_cpt = 28;
+  repeated FileDiff code_results = 29;
+}
+
+message SingleUpdateRequest {
+  int32 start_position = 1;
+  int32 end_position = 2;
+  int32 change_length = 3;
+  string replaced_string = 4;
+  SimpleRange range = 5;
+}
+
+message StreamCppResponse {
+  string text = 1;
+  optional int32 suggestion_start_line = 2;
+  optional int32 suggestion_confidence = 3;
+  optional bool done_stream = 4;
+  optional string debug_model_output = 5;
+  optional string debug_model_input = 6;
+  optional string debug_stream_time = 7;
+  optional string debug_total_time = 8;
+  optional string debug_ttft_time = 9;
+  optional string debug_server_timing = 10;
+  optional LineRange range_to_replace = 11;
+  optional CursorPredictionTarget cursor_prediction_target = 12;
+  optional bool done_edit = 13;
+  optional ModelInfo model_info = 14;
+  optional bool begin_edit = 15;
+  optional bool should_remove_leading_eol = 16;
+  optional string binding_id = 17;
+}
+
+message LinterErrors {
+  string relative_workspace_path = 1;
+  repeated LinterError errors = 2;
+  string file_contents = 3;
+}
+
+message LinterError {
+  string message = 1;
+  CursorRange range = 2;
+  optional string source = 3;
+  repeated RelatedInformation related_information = 4;
+  optional DiagnosticSeverity severity = 5;
+  optional bool is_stale = 6;
+}
+
+message LspSubgraphContextItem {
+  optional string uri = 1;
+  string type = 2;
+  string content = 3;
+  optional LspSubgraphRange range = 4;
+}
+
+message BlockDiffPatch {
+  ModelWindow start_model_window = 1;
+  repeated Change changes = 3;
+  string relative_path = 4;
+  string model_uuid = 7;
+  int32 start_from_change_index = 5;
+}
+
+message FilesyncUpdateWithModelVersion {
+  int32 model_version = 1;
+  string relative_workspace_path = 2;
+  repeated SingleUpdateRequest updates = 3;
+  int32 expected_file_length = 4;
+}
+
+message CursorRange {
+  CursorPosition start_position = 1;
+  CursorPosition end_position = 2;
+}
+
+message FileDiff {
+  int32 added = 4;
+  int32 removed = 5;
+  string from = 1;
+  string to = 2;
+  repeated Chunk chunks = 3;
+  optional string before_file_contents = 6;
+  optional string after_file_contents = 7;
+}
+
+message NotebookCell {
+}
+
+message LspSubgraphRange {
+  int32 start_line = 1;
+  int32 start_character = 2;
+  int32 end_line = 3;
+  int32 end_character = 4;
+}
+
+message LspSubgraphFullContext {
+  string uri = 1;
+  string symbol_name = 2;
+  repeated LspSubgraphPosition positions = 3;
+  repeated LspSubgraphContextItem context_items = 4;
+  float score = 5;
+}
+
+message SimplestRange {
+  int32 start_line = 1;
+  int32 end_line_inclusive = 2;
+}
+
+message RelatedInformation {
+  string message = 1;
+  CursorRange range = 2;
+}
+
+message Change {
+  string text = 1;
+  IRange range = 2;
+}
+
+message CppIntentInfo {
+  string source = 1;
+}
+
+message DataframeInfo {
+  string name = 1;
+  string shape = 2;
+  int32 data_dimensionality = 3;
+  repeated Column columns = 6;
+  int32 row_count = 7;
+  string index_column = 8;
+}
+
+message ModelWindow {
+  repeated string lines = 1;
+  int32 start_line_number = 2;
+  int32 end_line_number = 3;
+}
+
+message BM25Chunk {
+  string content = 1;
+  SimplestRange range = 2;
+  int32 score = 3;
+  string relative_path = 4;
+}
+
+message Diagnostic {
+  string message = 1;
+  CursorRange range = 2;
+  DiagnosticSeverity severity = 3;
+  repeated RelatedInformation related_information = 4;
+}
+
+message CppContextItem {
+  string contents = 1;
+  optional string symbol = 2;
+  string relative_workspace_path = 3;
+  float score = 4;
+}
+
+message Column {
+  string key = 1;
+  string type = 2;
+}
+
+message LspSubgraphPosition {
+  int32 line = 1;
+  int32 character = 2;
+}
+
+message LineRange {
+  int32 start_line_number = 1;
+  int32 end_line_number_inclusive = 2;
+}
+
+message SimpleRange {
+  int32 start_line_number = 1;
+  int32 start_column = 2;
+  int32 end_line_number_inclusive = 3;
+  int32 end_column = 4;
+}
+
+message CurrentFileInfo {
+  string relative_workspace_path = 1;
+  string contents = 2;
+  bool rely_on_filesync = 18;
+  optional string sha_256_hash = 17;
+  repeated NotebookCell cells = 16;
+  repeated BM25Chunk top_chunks = 10;
+  int32 contents_start_at_line = 9;
+  CursorPosition cursor_position = 3;
+  repeated DataframeInfo dataframes = 4;
+  int32 total_number_of_lines = 8;
+  string language_id = 5;
+  CursorRange selection = 6;
+  optional int32 alternative_version_id = 11;
+  repeated Diagnostic diagnostics = 7;
+  optional int32 file_version = 14;
+  repeated int32 cell_start_lines = 15;
+  string workspace_root_path = 19;
+  optional string line_ending = 20;
+}
+
+message CursorPredictionTarget {
+  string relative_path = 1;
+  int32 line_number_one_indexed = 2;
+  string expected_content = 3;
+  bool should_retrigger_cpp = 4;
+}
+
+message AdditionalFile {
+  string relative_workspace_path = 1;
+  bool is_open = 2;
+  repeated string visible_range_content = 3;
+  optional double last_viewed_at = 4;
+  repeated int32 start_line_number_one_indexed = 5;
+  repeated LineRange visible_ranges = 6;
+}
+
+message LspSuggestedItems {
+  repeated LspSuggestion suggestions = 1;
+}
+
+message IRange {
+  int32 start_line_number = 1;
+  int32 start_column = 2;
+  int32 end_line_number = 3;
+  int32 end_column = 4;
+}
+
+message Chunk {
+  string content = 1;
+  repeated string lines = 2;
+  int32 old_start = 3;
+  int32 old_lines = 4;
+  int32 new_start = 5;
+  int32 new_lines = 6;
+}
+
+service AiService {
+  rpc StreamCpp(StreamCppRequest) returns (stream StreamCppResponse);
+}
+
