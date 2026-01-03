@@ -2,30 +2,43 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 
 	aiserverv1 "github.com/bengu3/cursor-tab.nvim/cursor-api/gen/aiserver/v1"
 	"github.com/bengu3/cursor-tab.nvim/internal/cursor"
-	"github.com/neovim/go-client/nvim"
 )
 
 var cursorClient *cursor.Client
 
 type SuggestionRequest struct {
-	FileContents string `msgpack:"file_contents"`
-	Line         int32  `msgpack:"line"`
-	Column       int32  `msgpack:"column"`
-	FilePath     string `msgpack:"file_path"`
-	LanguageID   string `msgpack:"language_id"`
+	FileContents string `json:"file_contents"`
+	Line         int32  `json:"line"`
+	Column       int32  `json:"column"`
+	FilePath     string `json:"file_path"`
+	LanguageID   string `json:"language_id"`
 }
 
-func getSuggestion(req *SuggestionRequest) (string, error) {
-	if req == nil || req.FileContents == "" {
-		return "", nil
+type SuggestionResponse struct {
+	Suggestion string `json:"suggestion"`
+	Error      string `json:"error,omitempty"`
+}
+
+func handleSuggestion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req SuggestionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("Error decoding request: %v", err)
+		json.NewEncoder(w).Encode(SuggestionResponse{Error: err.Error()})
+		return
 	}
 
 	log.Printf("Getting suggestion for %s at line=%d col=%d", req.FilePath, req.Line, req.Column)
@@ -33,7 +46,8 @@ func getSuggestion(req *SuggestionRequest) (string, error) {
 	log.Printf("Language: %s", req.LanguageID)
 
 	if cursorClient == nil {
-		return "", fmt.Errorf("cursor client not initialized")
+		json.NewEncoder(w).Encode(SuggestionResponse{Error: "cursor client not initialized"})
+		return
 	}
 
 	lines := strings.Split(req.FileContents, "\n")
@@ -57,7 +71,8 @@ func getSuggestion(req *SuggestionRequest) (string, error) {
 	stream, err := cursorClient.StreamCpp(ctx, streamReq)
 	if err != nil {
 		log.Printf("Error calling StreamCpp: %v", err)
-		return "", err
+		json.NewEncoder(w).Encode(SuggestionResponse{Error: err.Error()})
+		return
 	}
 
 	var suggestion strings.Builder
@@ -73,12 +88,15 @@ func getSuggestion(req *SuggestionRequest) (string, error) {
 
 	if err := stream.Err(); err != nil && err != io.EOF {
 		log.Printf("Stream error: %v", err)
-		return "", err
+		json.NewEncoder(w).Encode(SuggestionResponse{Error: err.Error()})
+		return
 	}
 
 	result := suggestion.String()
 	log.Printf("Final suggestion (%d chunks): %q", chunkCount, result)
-	return result, nil
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(SuggestionResponse{Suggestion: result})
 }
 
 func main() {
@@ -88,7 +106,7 @@ func main() {
 		defer logFile.Close()
 	}
 
-	log.Println("Starting cursor-tab RPC server...")
+	log.Println("Starting cursor-tab HTTP server...")
 
 	cursorClient, err = cursor.NewClient()
 	if err != nil {
@@ -97,18 +115,11 @@ func main() {
 		log.Println("Cursor API client initialized")
 	}
 
-	v, err := nvim.New(os.Stdin, os.Stdout, os.Stdout, log.Printf)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer v.Close()
+	http.HandleFunc("/suggestion", handleSuggestion)
 
-	v.RegisterHandler("get_suggestion", getSuggestion)
-
-	log.Println("RPC handlers registered, serving...")
-
-	if err := v.Serve(); err != nil {
-		log.Printf("Error serving: %v", err)
-		os.Exit(1)
+	port := "37292"
+	log.Printf("HTTP server listening on :%s", port)
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+		log.Fatalf("Server error: %v", err)
 	}
 }
