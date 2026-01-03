@@ -1,0 +1,17 @@
+# Binaries
+bin/
+cursor-tab-server
+
+# Go
+go.sum
+
+# Logs
+*.log
+/tmp/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
