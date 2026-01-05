@@ -50,9 +50,17 @@ func handleSuggestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Getting suggestion for %s at line=%d col=%d (0-indexed)", req.FilePath, req.Line, req.Column)
-	log.Printf("File contents length: %d bytes", len(req.FileContents))
-	log.Printf("Language: %s", req.LanguageID)
+	// Log request params as pretty-printed JSON
+	requestLog := map[string]interface{}{
+		"file_path":      req.FilePath,
+		"line":           req.Line,
+		"column":         req.Column,
+		"language_id":    req.LanguageID,
+		"workspace_path": req.WorkspacePath,
+		"content_length": len(req.FileContents),
+	}
+	requestJSON, _ := json.MarshalIndent(requestLog, "", "  ")
+	log.Printf("REQUEST:\n%s", string(requestJSON))
 
 	if cursorClient == nil {
 		json.NewEncoder(w).Encode(SuggestionResponse{Error: "cursor client not initialized"})
@@ -61,8 +69,6 @@ func handleSuggestion(w http.ResponseWriter, r *http.Request) {
 
 	lines := strings.Split(req.FileContents, "\n")
 	totalLines := int32(len(lines))
-
-	log.Printf("Workspace: %s", req.WorkspacePath)
 
 	giveDebug := true
 	supportsCpt := true
@@ -87,11 +93,10 @@ func handleSuggestion(w http.ResponseWriter, r *http.Request) {
 		GiveDebugOutput: &giveDebug,
 	}
 
-	log.Printf("Calling StreamCpp API...")
 	ctx := context.Background()
 	stream, err := cursorClient.StreamCpp(ctx, streamReq)
 	if err != nil {
-		log.Printf("Error calling StreamCpp: %v", err)
+		log.Printf("ERROR: %v", err)
 		json.NewEncoder(w).Encode(SuggestionResponse{Error: err.Error()})
 		return
 	}
@@ -104,11 +109,16 @@ func handleSuggestion(w http.ResponseWriter, r *http.Request) {
 		chunkCount++
 
 		// Log debug information if available
-		if resp.DebugModelInput != nil {
-			log.Printf("  Debug Model Input: %s", *resp.DebugModelInput)
-		}
-		if resp.DebugModelOutput != nil {
-			log.Printf("  Debug Model Output: %s", *resp.DebugModelOutput)
+		if resp.DebugModelInput != nil || resp.DebugModelOutput != nil {
+			debugLog := map[string]interface{}{}
+			if resp.DebugModelInput != nil {
+				debugLog["model_input"] = *resp.DebugModelInput
+			}
+			if resp.DebugModelOutput != nil {
+				debugLog["model_output"] = *resp.DebugModelOutput
+			}
+			debugJSON, _ := json.MarshalIndent(debugLog, "", "  ")
+			log.Printf("DEBUG:\n%s", string(debugJSON))
 		}
 		if resp.RangeToReplace != nil {
 			rangeToReplace = &RangeInfo{
@@ -125,13 +135,29 @@ func handleSuggestion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := stream.Err(); err != nil && err != io.EOF {
-		log.Printf("Stream error: %v", err)
+		log.Printf("ERROR: Stream error: %v", err)
 		json.NewEncoder(w).Encode(SuggestionResponse{Error: err.Error()})
 		return
 	}
 
 	result := suggestion.String()
-	log.Printf("Final suggestion (%d chunks): %q", chunkCount, result)
+
+	// Log response info
+	responseLog := map[string]interface{}{
+		"suggestion_length": len(result),
+		"suggestion_lines":  len(strings.Split(result, "\n")),
+	}
+	if rangeToReplace != nil {
+		responseLog["range_start_line"] = rangeToReplace.StartLine
+		responseLog["range_end_line"] = rangeToReplace.EndLine
+	}
+	if len(result) > 100 {
+		responseLog["suggestion_preview"] = result[:100] + "..."
+	} else {
+		responseLog["suggestion_preview"] = result
+	}
+	responseJSON, _ := json.MarshalIndent(responseLog, "", "  ")
+	log.Printf("RESPONSE:\n%s", string(responseJSON))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(SuggestionResponse{
@@ -147,19 +173,15 @@ func main() {
 		defer logFile.Close()
 	}
 
-	log.Println("Starting cursor-tab HTTP server...")
-
 	cursorClient, err = cursor.NewClient()
 	if err != nil {
-		log.Printf("Warning: Failed to initialize Cursor client: %v", err)
-	} else {
-		log.Println("Cursor API client initialized")
+		log.Printf("ERROR: Failed to initialize Cursor client: %v", err)
 	}
 
 	http.HandleFunc("/suggestion", handleSuggestion)
 
 	port := "37292"
-	log.Printf("HTTP server listening on :%s", port)
+	log.Printf("SERVER: Listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
