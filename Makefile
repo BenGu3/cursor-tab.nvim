@@ -1,4 +1,4 @@
-.PHONY: build install clean generate
+.PHONY: build install clean clean-logs generate
 
 generate:
 	@echo "Generating protobuf code..."
@@ -16,6 +16,12 @@ clean:
 	rm -rf bin/
 	rm -rf cursor-api/gen/
 	rm -f /tmp/cursor-tab.log
+
+clean-logs:
+	@echo "Cleaning logs..."
+	rm -f /tmp/cursor-tab.log
+	touch /tmp/cursor-tab.log
+	@echo "Logs cleaned!"
 
 run: build
 	./bin/cursor-tab-server

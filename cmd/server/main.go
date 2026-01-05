@@ -25,8 +25,16 @@ type SuggestionRequest struct {
 }
 
 type SuggestionResponse struct {
-	Suggestion string `json:"suggestion"`
-	Error      string `json:"error,omitempty"`
+	Suggestion   string      `json:"suggestion"`
+	Error        string      `json:"error,omitempty"`
+	RangeReplace *RangeInfo `json:"range_replace,omitempty"`
+}
+
+type RangeInfo struct {
+	StartLine   int32 `json:"start_line"`
+	StartColumn int32 `json:"start_column"`
+	EndLine     int32 `json:"end_line"`
+	EndColumn   int32 `json:"end_column"`
 }
 
 func handleSuggestion(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +50,7 @@ func handleSuggestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Getting suggestion for %s at line=%d col=%d", req.FilePath, req.Line, req.Column)
+	log.Printf("Getting suggestion for %s at line=%d col=%d (0-indexed)", req.FilePath, req.Line, req.Column)
 	log.Printf("File contents length: %d bytes", len(req.FileContents))
 	log.Printf("Language: %s", req.LanguageID)
 
@@ -56,6 +64,9 @@ func handleSuggestion(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Workspace: %s", req.WorkspacePath)
 
+	giveDebug := true
+	supportsCpt := true
+	supportsCrlfCpt := true
 	streamReq := &aiserverv1.StreamCppRequest{
 		CurrentFile: &aiserverv1.CurrentFileInfo{
 			Contents:              req.FileContents,
@@ -68,6 +79,12 @@ func handleSuggestion(w http.ResponseWriter, r *http.Request) {
 				Column: req.Column,
 			},
 		},
+		CppIntentInfo: &aiserverv1.CppIntentInfo{
+			Source: "typing",
+		},
+		SupportsCpt:     &supportsCpt,
+		SupportsCrlfCpt: &supportsCrlfCpt,
+		GiveDebugOutput: &giveDebug,
 	}
 
 	log.Printf("Calling StreamCpp API...")
@@ -80,11 +97,28 @@ func handleSuggestion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var suggestion strings.Builder
+	var rangeToReplace *RangeInfo
 	chunkCount := 0
 	for stream.Receive() {
 		resp := stream.Msg()
 		chunkCount++
-		log.Printf("Chunk %d: text=%q, done=%v", chunkCount, resp.Text, resp.DoneStream)
+
+		// Log debug information if available
+		if resp.DebugModelInput != nil {
+			log.Printf("  Debug Model Input: %s", *resp.DebugModelInput)
+		}
+		if resp.DebugModelOutput != nil {
+			log.Printf("  Debug Model Output: %s", *resp.DebugModelOutput)
+		}
+		if resp.RangeToReplace != nil {
+			rangeToReplace = &RangeInfo{
+				StartLine:   resp.RangeToReplace.StartLineNumber,
+				StartColumn: 0, // Will be inferred from cursor position
+				EndLine:     resp.RangeToReplace.EndLineNumberInclusive,
+				EndColumn:   -1, // -1 means end of line
+			}
+		}
+
 		if resp.Text != "" {
 			suggestion.WriteString(resp.Text)
 		}
@@ -100,7 +134,10 @@ func handleSuggestion(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Final suggestion (%d chunks): %q", chunkCount, result)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(SuggestionResponse{Suggestion: result})
+	json.NewEncoder(w).Encode(SuggestionResponse{
+		Suggestion:   result,
+		RangeReplace: rangeToReplace,
+	})
 }
 
 func main() {

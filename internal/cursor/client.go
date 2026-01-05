@@ -50,6 +50,7 @@ func (c *Client) StreamCpp(ctx context.Context, req *aiserverv1.StreamCppRequest
 	connectReq := connect.NewRequest(req)
 	connectReq.Header().Set("authorization", "Bearer "+c.accessToken)
 	connectReq.Header().Set("x-cursor-client-version", c.clientVersion)
+	connectReq.Header().Set("x-cursor-machine-id", c.machineID)
 
 	stream, err := c.aiClient.StreamCpp(ctx, connectReq)
 	if err != nil {
