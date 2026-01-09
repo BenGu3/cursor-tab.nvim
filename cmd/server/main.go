@@ -6,7 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -21,6 +21,7 @@ import (
 var cursorClient *cursor.Client
 var store = suggestionstore.NewStore()
 var suggestionCounter int
+var logger *slog.Logger
 
 type NewSuggestionRequest struct {
 	FileContents  string `json:"file_contents"`
@@ -48,22 +49,19 @@ func handleNewSuggestion(w http.ResponseWriter, r *http.Request) {
 
 	var req NewSuggestionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("Error decoding request: %v", err)
+		logger.Error("Error decoding request", "error", err)
 		json.NewEncoder(w).Encode(SuggestionResponse{Error: err.Error()})
 		return
 	}
 
-	// Log request params as pretty-printed JSON
-	requestLog := map[string]interface{}{
-		"file_path":      req.FilePath,
-		"line":           req.Line,
-		"column":         req.Column,
-		"language_id":    req.LanguageID,
-		"workspace_path": req.WorkspacePath,
-		"content_length": len(req.FileContents),
-	}
-	requestJSON, _ := json.MarshalIndent(requestLog, "", "  ")
-	log.Printf("NEW SUGGESTION REQUEST:\n%s", string(requestJSON))
+	logger.Info("New suggestion request",
+		"file_path", req.FilePath,
+		"line", req.Line,
+		"column", req.Column,
+		"language_id", req.LanguageID,
+		"workspace_path", req.WorkspacePath,
+		"content_length", len(req.FileContents),
+	)
 
 	if cursorClient == nil {
 		json.NewEncoder(w).Encode(SuggestionResponse{Error: "cursor client not initialized"})
@@ -99,7 +97,7 @@ func handleNewSuggestion(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 	stream, err := cursorClient.StreamCpp(ctx, streamReq)
 	if err != nil {
-		log.Printf("ERROR: %v", err)
+		logger.Error("Failed to stream from Cursor API", "error", err)
 		json.NewEncoder(w).Encode(SuggestionResponse{Error: err.Error()})
 		return
 	}
@@ -107,7 +105,7 @@ func handleNewSuggestion(w http.ResponseWriter, r *http.Request) {
 	// Parse stream into suggestions
 	suggestions, err := parseSuggestions(stream)
 	if err != nil {
-		log.Printf("ERROR: %v", err)
+		logger.Error("Failed to parse suggestions from stream", "error", err)
 		json.NewEncoder(w).Encode(SuggestionResponse{Error: err.Error()})
 		return
 	}
@@ -134,8 +132,12 @@ func handleNewSuggestion(w http.ResponseWriter, r *http.Request) {
 		// Store each suggestion with its own ID (except first, which we return directly)
 		if i > 0 {
 			store.Store(suggestionIDs[i], suggestions[i])
-			log.Printf("Stored suggestion #%d with ID: %s, next_id: %s, chars: %d",
-				i+1, suggestionIDs[i], suggestions[i].NextSuggestionID, len(suggestions[i].Text))
+			logger.Info("Stored suggestion",
+				"index", i+1,
+				"suggestion_id", suggestionIDs[i],
+				"next_suggestion_id", suggestions[i].NextSuggestionID,
+				"chars", len(suggestions[i].Text),
+			)
 		}
 	}
 
@@ -153,26 +155,25 @@ func handleNewSuggestion(w http.ResponseWriter, r *http.Request) {
 		response.NextSuggestionID = firstSuggestion.NextSuggestionID
 	}
 
-	// Log response info
-	responseLog := map[string]interface{}{
-		"suggestion_length":  len(firstSuggestion.Text),
-		"suggestion_lines":   len(strings.Split(firstSuggestion.Text, "\n")),
-		"total_suggestions":  len(suggestions),
+	// Build log attributes
+	logAttrs := []any{
+		"suggestion_length", len(firstSuggestion.Text),
+		"suggestion_lines", len(strings.Split(firstSuggestion.Text, "\n")),
+		"total_suggestions", len(suggestions),
 	}
 	if firstSuggestion.Range != nil {
-		responseLog["range_start_line"] = firstSuggestion.Range.StartLine
-		responseLog["range_end_line"] = firstSuggestion.Range.EndLine
+		logAttrs = append(logAttrs, "range_start_line", firstSuggestion.Range.StartLine)
+		logAttrs = append(logAttrs, "range_end_line", firstSuggestion.Range.EndLine)
 	}
 	if response.NextSuggestionID != "" {
-		responseLog["next_suggestion_id"] = response.NextSuggestionID
+		logAttrs = append(logAttrs, "next_suggestion_id", response.NextSuggestionID)
 	}
 	if len(firstSuggestion.Text) > 100 {
-		responseLog["suggestion_preview"] = firstSuggestion.Text[:100] + "..."
+		logAttrs = append(logAttrs, "suggestion_preview", firstSuggestion.Text[:100]+"...")
 	} else {
-		responseLog["suggestion_preview"] = firstSuggestion.Text
+		logAttrs = append(logAttrs, "suggestion_preview", firstSuggestion.Text)
 	}
-	responseJSON, _ := json.MarshalIndent(responseLog, "", "  ")
-	log.Printf("RESPONSE:\n%s", string(responseJSON))
+	logger.Info("Sending response", logAttrs...)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
@@ -188,19 +189,18 @@ func parseSuggestions(stream *connect.ServerStreamForClient[aiserverv1.StreamCpp
 		chunkCount++
 
 		// Log entire response object structure
-		log.Printf("CHUNK %d:\n%+v", chunkCount, resp)
+		logger.Debug("Received stream chunk", "chunk_number", chunkCount, "response", fmt.Sprintf("%+v", resp))
 
 		// Log debug information if available
 		if resp.DebugModelInput != nil || resp.DebugModelOutput != nil {
-			debugLog := map[string]interface{}{}
+			debugAttrs := []any{}
 			if resp.DebugModelInput != nil {
-				debugLog["model_input"] = *resp.DebugModelInput
+				debugAttrs = append(debugAttrs, "model_input", *resp.DebugModelInput)
 			}
 			if resp.DebugModelOutput != nil {
-				debugLog["model_output"] = *resp.DebugModelOutput
+				debugAttrs = append(debugAttrs, "model_output", *resp.DebugModelOutput)
 			}
-			debugJSON, _ := json.MarshalIndent(debugLog, "", "  ")
-			log.Printf("DEBUG:\n%s", string(debugJSON))
+			logger.Debug("Model debug info", debugAttrs...)
 		}
 
 		// Handle different chunk types
@@ -233,19 +233,23 @@ func parseSuggestions(stream *connect.ServerStreamForClient[aiserverv1.StreamCpp
 		if resp.DoneEdit != nil && *resp.DoneEdit {
 			if currentSuggestion != nil {
 				suggestions = append(suggestions, currentSuggestion)
-				log.Printf("Completed suggestion #%d: %d chars, range %v", len(suggestions), len(currentSuggestion.Text), currentSuggestion.Range)
+				logger.Info("Completed suggestion",
+					"index", len(suggestions),
+					"chars", len(currentSuggestion.Text),
+					"range", currentSuggestion.Range,
+				)
 				currentSuggestion = nil
 			}
 		}
 
 		// Beginning new suggestion
 		if resp.BeginEdit != nil && *resp.BeginEdit {
-			log.Printf("Beginning new suggestion...")
+			logger.Debug("Beginning new suggestion")
 		}
 
 		// Stream is done
 		if resp.DoneStream != nil && *resp.DoneStream {
-			log.Printf("Stream complete")
+			logger.Debug("Stream complete")
 			break
 		}
 	}
@@ -254,7 +258,7 @@ func parseSuggestions(stream *connect.ServerStreamForClient[aiserverv1.StreamCpp
 		return nil, fmt.Errorf("stream error: %w", err)
 	}
 
-	log.Printf("Parsed %d total suggestions", len(suggestions))
+	logger.Info("Parsed suggestions from stream", "total_suggestions", len(suggestions))
 	return suggestions, nil
 }
 
@@ -271,11 +275,12 @@ func handleGetSuggestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("GET suggestion request for ID: %s", suggestionID)
+	logger.Info("Get suggestion request", "suggestion_id", suggestionID)
 
 	// Get suggestion from store
 	suggestion := store.Get(suggestionID)
 	if suggestion == nil {
+		logger.Warn("Suggestion not found in store", "suggestion_id", suggestionID)
 		json.NewEncoder(w).Encode(SuggestionResponse{Error: "suggestion not found"})
 		return
 	}
@@ -291,7 +296,11 @@ func handleGetSuggestion(w http.ResponseWriter, r *http.Request) {
 	// Delete this suggestion from store (already retrieved)
 	store.Delete(suggestionID)
 
-	log.Printf("Returning stored suggestion: %d chars, next_id=%s", len(suggestion.Text), suggestion.NextSuggestionID)
+	logger.Info("Returning stored suggestion",
+		"suggestion_id", suggestionID,
+		"chars", len(suggestion.Text),
+		"next_suggestion_id", suggestion.NextSuggestionID,
+	)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
@@ -302,15 +311,22 @@ func main() {
 	port := flag.Int("port", 0, "Port to listen on (0 = OS assigns available port)")
 	flag.Parse()
 
+	// Set up structured logging
 	logFile, err := os.OpenFile("/tmp/cursor-tab.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err == nil {
-		log.SetOutput(logFile)
-		defer logFile.Close()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open log file: %v\n", err)
+		os.Exit(1)
 	}
+	defer logFile.Close()
+
+	// Create JSON handler for structured logging
+	logger = slog.New(slog.NewJSONHandler(logFile, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
 
 	cursorClient, err = cursor.NewClient()
 	if err != nil {
-		log.Printf("ERROR: Failed to initialize Cursor client: %v", err)
+		logger.Error("Failed to initialize Cursor client", "error", err)
 	}
 
 	// POST /suggestion/new - generate new suggestions from Cursor
@@ -322,20 +338,29 @@ func main() {
 	// Create listener to get actual port
 	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", *port))
 	if err != nil {
-		log.Fatalf("Failed to create listener: %v", err)
+		logger.Error("Failed to create listener", "error", err)
+		os.Exit(1)
 	}
 
 	// Get the actual port that was assigned
-	actualPort := listener.Addr().(*net.TCPAddr).Port
+	serverPort := listener.Addr().(*net.TCPAddr).Port
+
+	// Add port to logger context for all subsequent logs
+	logger = logger.With("port", serverPort)
 
 	// Print port to stdout for Lua to parse (before any other output)
-	fmt.Printf("SERVER_PORT=%d\n", actualPort)
+	fmt.Printf("SERVER_PORT=%d\n", serverPort)
 
-	log.Printf("SERVER: Listening on localhost:%d", actualPort)
-	log.Printf("  POST /suggestion/new - generate new suggestions")
-	log.Printf("  GET  /suggestion/{id} - retrieve stored suggestion")
+	logger.Info("Server starting",
+		"address", fmt.Sprintf("localhost:%d", serverPort),
+		"endpoints", []string{
+			"POST /suggestion/new",
+			"GET /suggestion/{id}",
+		},
+	)
 
 	if err := http.Serve(listener, nil); err != nil {
-		log.Fatalf("Server error: %v", err)
+		logger.Error("Server error", "error", err)
+		os.Exit(1)
 	}
 }
