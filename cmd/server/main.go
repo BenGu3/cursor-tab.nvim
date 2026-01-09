@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -296,6 +298,10 @@ func handleGetSuggestion(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	// Parse command-line flags
+	port := flag.Int("port", 0, "Port to listen on (0 = OS assigns available port)")
+	flag.Parse()
+
 	logFile, err := os.OpenFile("/tmp/cursor-tab.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err == nil {
 		log.SetOutput(logFile)
@@ -313,11 +319,23 @@ func main() {
 	// GET /suggestion/{id} - retrieve existing suggestion from store
 	http.HandleFunc("/suggestion/", handleGetSuggestion)
 
-	port := "37292"
-	log.Printf("SERVER: Listening on :%s", port)
+	// Create listener to get actual port
+	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", *port))
+	if err != nil {
+		log.Fatalf("Failed to create listener: %v", err)
+	}
+
+	// Get the actual port that was assigned
+	actualPort := listener.Addr().(*net.TCPAddr).Port
+
+	// Print port to stdout for Lua to parse (before any other output)
+	fmt.Printf("SERVER_PORT=%d\n", actualPort)
+
+	log.Printf("SERVER: Listening on localhost:%d", actualPort)
 	log.Printf("  POST /suggestion/new - generate new suggestions")
 	log.Printf("  GET  /suggestion/{id} - retrieve stored suggestion")
-	if err := http.ListenAndServe(":"+port, nil); err != nil {
+
+	if err := http.Serve(listener, nil); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
 }

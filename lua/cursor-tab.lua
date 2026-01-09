@@ -6,7 +6,9 @@ M.current_suggestion_text = nil
 M.current_line = nil
 M.current_col = nil
 M.accepting = false
-M.server_url = "http://localhost:37292"
+M.server_url = nil
+M.server_port = nil
+M.server_ready = false
 M.server_path = nil
 M.server_job = nil
 M.debounce_timer = nil
@@ -18,8 +20,6 @@ M.next_suggestion_id = nil
 function M.setup(opts)
 	opts = opts or {}
 
-	M.server_url = opts.server_url or "http://localhost:37292"
-
 	if not opts.server_path then
 		local source = debug.getinfo(1, "S").source
 		local plugin_dir = vim.fn.fnamemodify(source:sub(2), ":h:h")
@@ -29,6 +29,16 @@ function M.setup(opts)
 	end
 
 	M.ensure_server()
+
+	-- Cleanup server on Neovim exit
+	vim.api.nvim_create_autocmd("VimLeavePre", {
+		callback = function()
+			if M.server_job then
+				vim.fn.jobstop(M.server_job)
+				M.server_job = nil
+			end
+		end,
+	})
 
 	vim.api.nvim_create_autocmd({ "TextChangedI" }, {
 		callback = function()
@@ -86,12 +96,33 @@ function M.ensure_server()
 		return false
 	end
 
-	M.server_job = vim.fn.jobstart({ M.server_path }, {
+	-- Reset state
+	M.server_ready = false
+	M.server_port = nil
+	M.server_url = nil
+
+	M.server_job = vim.fn.jobstart({ M.server_path, "--port", "0" }, {
+		on_stdout = function(_, data)
+			if data and #data > 0 then
+				for _, line in ipairs(data) do
+					-- Parse "SERVER_PORT=12345" from stdout
+					local port = line:match("SERVER_PORT=(%d+)")
+					if port then
+						M.server_port = tonumber(port)
+						M.server_url = "http://localhost:" .. M.server_port
+						M.server_ready = true
+					end
+				end
+			end
+		end,
 		on_exit = function(_, exit_code)
 			if exit_code ~= 0 then
 				vim.notify("cursor-tab server exited with code " .. exit_code, vim.log.levels.ERROR)
 			end
 			M.server_job = nil
+			M.server_ready = false
+			M.server_port = nil
+			M.server_url = nil
 		end,
 		on_stderr = function(_, data)
 			if data and #data > 0 and data[1] ~= "" then
@@ -106,6 +137,7 @@ function M.ensure_server()
 		return false
 	end
 
+	-- Wait a bit for server to initialize and report its port
 	vim.defer_fn(function() end, 100)
 	return true
 end
@@ -115,6 +147,15 @@ function M.get_suggestion(suggestion_id, callback)
 		if callback then
 			callback(nil)
 		end
+		return
+	end
+
+	-- Wait for server to be ready (port discovered)
+	if not M.server_ready or not M.server_url then
+		-- Retry after a short delay
+		vim.defer_fn(function()
+			M.get_suggestion(suggestion_id, callback)
+		end, 50)
 		return
 	end
 
