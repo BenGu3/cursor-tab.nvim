@@ -99,9 +99,14 @@ func handleNewSuggestion(w http.ResponseWriter, r *http.Request) {
 		GiveDebugOutput: &giveDebug,
 	}
 
-	ctx := context.Background()
+	ctx := r.Context()
 	stream, err := cursorClient.StreamCpp(ctx, streamReq)
 	if err != nil {
+		// Check if request was cancelled
+		if ctx.Err() == context.Canceled {
+			logger.Info("Request cancelled")
+			return
+		}
 		logger.Error("Failed to stream from Cursor API", "error", err)
 		json.NewEncoder(w).Encode(SuggestionResponse{Error: err.Error()})
 		return
@@ -137,7 +142,7 @@ func handleNewSuggestion(w http.ResponseWriter, r *http.Request) {
 				"next_suggestion_id", nextSuggestionID)
 
 			// Start background processing (stream is positioned at BeginEdit)
-			go storeRemainingSuggestions(stream, nextSuggestionID)
+			go storeRemainingSuggestions(ctx, stream, nextSuggestionID)
 		} else if resp.DoneStream != nil && *resp.DoneStream {
 			// Stream is done, no more suggestions
 			hasMoreSuggestions = false
@@ -328,7 +333,7 @@ func parseNextSuggestion(stream *connect.ServerStreamForClient[aiserverv1.Stream
 
 // storeRemainingSuggestions processes remaining suggestions in the stream and stores them in the cache.
 // This runs in a background goroutine after the first suggestion has been returned to the client.
-func storeRemainingSuggestions(stream *connect.ServerStreamForClient[aiserverv1.StreamCppResponse], firstNextID string) {
+func storeRemainingSuggestions(ctx context.Context, stream *connect.ServerStreamForClient[aiserverv1.StreamCppResponse], firstNextID string) {
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error("Background storage panic", "panic", r)
@@ -339,6 +344,18 @@ func storeRemainingSuggestions(stream *connect.ServerStreamForClient[aiserverv1.
 	count := 0
 
 	for {
+		// Check for cancellation
+		select {
+		case <-ctx.Done():
+			logger.Info("Background processing cancelled",
+				"reason", ctx.Err(),
+				"suggestions_stored", count,
+			)
+			return
+		default:
+			// Continue processing
+		}
+
 		// Parse next suggestion
 		suggestion, err := parseNextSuggestion(stream)
 		if err != nil {
