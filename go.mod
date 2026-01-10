@@ -4,6 +4,6 @@ go 1.21
 
 require (
 	connectrpc.com/connect v1.17.0
-	github.com/neovim/go-client v1.2.1
+	github.com/google/uuid v1.6.0
 	google.golang.org/protobuf v1.35.2
 )

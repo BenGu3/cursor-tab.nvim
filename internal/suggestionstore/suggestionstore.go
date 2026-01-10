@@ -47,3 +47,26 @@ func (s *Store) Delete(suggestionID string) {
 	defer s.mu.Unlock()
 	delete(s.suggestions, suggestionID)
 }
+
+// Keys returns all suggestion IDs currently in the store (for debugging)
+func (s *Store) Keys() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	keys := make([]string, 0, len(s.suggestions))
+	for k := range s.suggestions {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// GetAll returns all suggestions currently in the store (for debugging)
+func (s *Store) GetAll() map[string]*Suggestion {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	// Make a copy to avoid race conditions
+	all := make(map[string]*Suggestion, len(s.suggestions))
+	for k, v := range s.suggestions {
+		all[k] = v
+	}
+	return all
+}

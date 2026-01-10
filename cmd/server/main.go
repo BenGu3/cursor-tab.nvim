@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
 	aiserverv1 "github.com/bengu3/cursor-tab.nvim/cursor-api/gen/aiserver/v1"
 	"github.com/bengu3/cursor-tab.nvim/internal/cursor"
 	"github.com/bengu3/cursor-tab.nvim/internal/suggestionstore"
@@ -20,7 +21,6 @@ import (
 
 var cursorClient *cursor.Client
 var store = suggestionstore.NewStore()
-var suggestionCounter int
 var logger *slog.Logger
 
 type NewSuggestionRequest struct {
@@ -39,6 +39,11 @@ type SuggestionResponse struct {
 	NextSuggestionID       string                 `json:"next_suggestion_id,omitempty"`
 	BindingID              string                 `json:"binding_id,omitempty"`
 	ShouldRemoveLeadingEol bool                   `json:"should_remove_leading_eol,omitempty"`
+}
+
+// generateSuggestionID creates a unique suggestion ID using UUID
+func generateSuggestionID() string {
+	return fmt.Sprintf("sugg_%s", uuid.New().String())
 }
 
 func handleNewSuggestion(w http.ResponseWriter, r *http.Request) {
@@ -102,48 +107,45 @@ func handleNewSuggestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse stream into suggestions
-	suggestions, err := parseSuggestions(stream)
+	// Parse first suggestion using new early return pattern
+	firstSuggestion, err := parseNextSuggestion(stream)
 	if err != nil {
-		logger.Error("Failed to parse suggestions from stream", "error", err)
+		logger.Error("Failed to parse first suggestion", "error", err)
 		json.NewEncoder(w).Encode(SuggestionResponse{Error: err.Error()})
 		return
 	}
 
-	if len(suggestions) == 0 {
-		json.NewEncoder(w).Encode(SuggestionResponse{Error: "no suggestions returned"})
+	if firstSuggestion == nil {
+		json.NewEncoder(w).Encode(SuggestionResponse{Error: "no suggestion returned"})
 		return
 	}
 
-	// Pre-allocate IDs for all suggestions
-	suggestionIDs := make([]string, len(suggestions))
-	for i := 0; i < len(suggestions); i++ {
-		suggestionCounter++
-		suggestionIDs[i] = fmt.Sprintf("sugg_%d", suggestionCounter)
+	// Peek at next chunk to see if there are more suggestions
+	// After DoneEdit, next chunk is either BeginEdit (more suggestions) or DoneStream (done)
+	var nextSuggestionID string
+	var hasMoreSuggestions bool
+
+	if stream.Receive() {
+		resp := stream.Msg()
+
+		if resp.BeginEdit != nil && *resp.BeginEdit {
+			// There's another suggestion coming!
+			hasMoreSuggestions = true
+			nextSuggestionID = generateSuggestionID()
+
+			logger.Debug("More suggestions detected, starting background processing",
+				"next_suggestion_id", nextSuggestionID)
+
+			// Start background processing (stream is positioned at BeginEdit)
+			go storeRemainingSuggestions(stream, nextSuggestionID)
+		} else if resp.DoneStream != nil && *resp.DoneStream {
+			// Stream is done, no more suggestions
+			hasMoreSuggestions = false
+			logger.Debug("No more suggestions, stream complete")
+		}
 	}
 
-	// Link suggestions together and store them
-	for i := 0; i < len(suggestions); i++ {
-		// Link to next suggestion (or empty if last)
-		if i < len(suggestions)-1 {
-			suggestions[i].NextSuggestionID = suggestionIDs[i+1]
-		}
-
-		// Store each suggestion with its own ID (except first, which we return directly)
-		if i > 0 {
-			store.Store(suggestionIDs[i], suggestions[i])
-			logger.Info("Stored suggestion",
-				"index", i+1,
-				"suggestion_id", suggestionIDs[i],
-				"next_suggestion_id", suggestions[i].NextSuggestionID,
-				"chars", len(suggestions[i].Text),
-			)
-		}
-	}
-
-	// Return only the first suggestion
-	firstSuggestion := suggestions[0]
-
+	// Build response
 	response := SuggestionResponse{
 		Suggestion:             firstSuggestion.Text,
 		RangeReplace:           firstSuggestion.Range,
@@ -151,15 +153,16 @@ func handleNewSuggestion(w http.ResponseWriter, r *http.Request) {
 		ShouldRemoveLeadingEol: firstSuggestion.ShouldRemoveLeadingEol,
 	}
 
-	if len(suggestions) > 1 {
-		response.NextSuggestionID = firstSuggestion.NextSuggestionID
+	if hasMoreSuggestions {
+		response.NextSuggestionID = nextSuggestionID
 	}
 
 	// Build log attributes
 	logAttrs := []any{
 		"suggestion_length", len(firstSuggestion.Text),
 		"suggestion_lines", len(strings.Split(firstSuggestion.Text, "\n")),
-		"total_suggestions", len(suggestions),
+		"has_more_suggestions", hasMoreSuggestions,
+		"suggestion_text", firstSuggestion.Text, // Full text
 	}
 	if firstSuggestion.Range != nil {
 		logAttrs = append(logAttrs, "range_start_line", firstSuggestion.Range.StartLine)
@@ -168,12 +171,7 @@ func handleNewSuggestion(w http.ResponseWriter, r *http.Request) {
 	if response.NextSuggestionID != "" {
 		logAttrs = append(logAttrs, "next_suggestion_id", response.NextSuggestionID)
 	}
-	if len(firstSuggestion.Text) > 100 {
-		logAttrs = append(logAttrs, "suggestion_preview", firstSuggestion.Text[:100]+"...")
-	} else {
-		logAttrs = append(logAttrs, "suggestion_preview", firstSuggestion.Text)
-	}
-	logger.Info("Sending response", logAttrs...)
+	logger.Info("Returning first suggestion", logAttrs...)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
@@ -262,6 +260,165 @@ func parseSuggestions(stream *connect.ServerStreamForClient[aiserverv1.StreamCpp
 	return suggestions, nil
 }
 
+// parseNextSuggestion reads the stream until the next DoneEdit and returns the complete suggestion.
+// Returns nil if stream ends (DoneStream) without another suggestion.
+func parseNextSuggestion(stream *connect.ServerStreamForClient[aiserverv1.StreamCppResponse]) (*suggestionstore.Suggestion, error) {
+	var currentSuggestion *suggestionstore.Suggestion
+
+	for stream.Receive() {
+		resp := stream.Msg()
+
+		// Handle range_to_replace
+		if resp.RangeToReplace != nil {
+			if currentSuggestion == nil {
+				currentSuggestion = &suggestionstore.Suggestion{}
+			}
+			currentSuggestion.Range = &suggestionstore.RangeInfo{
+				StartLine:   resp.RangeToReplace.StartLineNumber,
+				StartColumn: 0,
+				EndLine:     resp.RangeToReplace.EndLineNumberInclusive,
+				EndColumn:   -1,
+			}
+			if resp.BindingId != nil {
+				currentSuggestion.BindingID = *resp.BindingId
+			}
+			if resp.ShouldRemoveLeadingEol != nil {
+				currentSuggestion.ShouldRemoveLeadingEol = *resp.ShouldRemoveLeadingEol
+			}
+		}
+
+		// Accumulate text
+		if resp.Text != "" {
+			if currentSuggestion == nil {
+				currentSuggestion = &suggestionstore.Suggestion{}
+			}
+			currentSuggestion.Text += resp.Text
+		}
+
+		// Check for completion markers
+		if resp.DoneEdit != nil && *resp.DoneEdit {
+			// Strip leading newline if requested
+			if currentSuggestion != nil && currentSuggestion.ShouldRemoveLeadingEol && len(currentSuggestion.Text) > 0 {
+				if currentSuggestion.Text[0] == '\n' {
+					currentSuggestion.Text = currentSuggestion.Text[1:]
+					logger.Debug("Stripped leading newline from suggestion")
+				}
+			}
+
+			logger.Debug("Parsed complete suggestion",
+				"chars", len(currentSuggestion.Text),
+				"range", currentSuggestion.Range,
+				"should_remove_leading_eol", currentSuggestion.ShouldRemoveLeadingEol)
+			return currentSuggestion, nil // Complete suggestion ready!
+		}
+
+		if resp.DoneStream != nil && *resp.DoneStream {
+			logger.Debug("Stream ended")
+			return nil, nil // Stream ended, no more suggestions
+		}
+	}
+
+	// Handle stream errors
+	if err := stream.Err(); err != nil && err != io.EOF {
+		return nil, fmt.Errorf("stream error: %w", err)
+	}
+
+	return currentSuggestion, nil
+}
+
+// storeRemainingSuggestions processes remaining suggestions in the stream and stores them in the cache.
+// This runs in a background goroutine after the first suggestion has been returned to the client.
+func storeRemainingSuggestions(stream *connect.ServerStreamForClient[aiserverv1.StreamCppResponse], firstNextID string) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("Background storage panic", "panic", r)
+		}
+	}()
+
+	currentID := firstNextID
+	count := 0
+
+	for {
+		// Parse next suggestion
+		suggestion, err := parseNextSuggestion(stream)
+		if err != nil {
+			logger.Error("Error parsing background suggestion",
+				"error", err,
+				"suggestions_stored", count)
+			return
+		}
+
+		if suggestion == nil {
+			// Stream ended
+			logger.Info("Background processing complete",
+				"suggestions_stored", count)
+			return
+		}
+
+		// Peek at next chunk to see if there are more suggestions
+		var nextSuggestionID string
+		if stream.Receive() {
+			resp := stream.Msg()
+
+			if resp.BeginEdit != nil && *resp.BeginEdit {
+				// There's another suggestion coming
+				nextSuggestionID = generateSuggestionID()
+			} else if resp.DoneStream != nil && *resp.DoneStream {
+				// Stream is done, no more suggestions
+				nextSuggestionID = ""
+			}
+		}
+
+		// Store this suggestion with the next ID (or empty if last)
+		suggestion.NextSuggestionID = nextSuggestionID
+		store.Store(currentID, suggestion)
+		count++
+
+		// Log the addition
+		logAttrs := []any{
+			"suggestion_id", currentID,
+			"next_id", nextSuggestionID,
+			"chars", len(suggestion.Text),
+			"suggestion_text", suggestion.Text,
+		}
+		if suggestion.Range != nil {
+			logAttrs = append(logAttrs,
+				"range_start_line", suggestion.Range.StartLine,
+				"range_end_line", suggestion.Range.EndLine)
+		}
+		logger.Info("Stored background suggestion", logAttrs...)
+
+		// Log ALL suggestions currently in store
+		allSuggestions := store.GetAll()
+		logger.Debug("All suggestions in store after addition",
+			"total_suggestions_in_store", len(allSuggestions))
+		for id, s := range allSuggestions {
+			storeLogAttrs := []any{
+				"id", id,
+				"chars", len(s.Text),
+				"text", s.Text,
+				"next_id", s.NextSuggestionID,
+			}
+			if s.Range != nil {
+				storeLogAttrs = append(storeLogAttrs,
+					"range_start_line", s.Range.StartLine,
+					"range_end_line", s.Range.EndLine)
+			}
+			logger.Debug("  -> Suggestion in store", storeLogAttrs...)
+		}
+
+		// If there's no next suggestion, we're done
+		if nextSuggestionID == "" {
+			logger.Info("Background processing complete",
+				"suggestions_stored", count)
+			return
+		}
+
+		// Move to next ID
+		currentID = nextSuggestionID
+	}
+}
+
 func handleGetSuggestion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -275,7 +432,11 @@ func handleGetSuggestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	storeKeysBeforeGet := store.Keys()
 	logger.Info("Get suggestion request", "suggestion_id", suggestionID)
+	logger.Debug("Store state before get",
+		"total_suggestions_in_store", len(storeKeysBeforeGet),
+		"store_keys", storeKeysBeforeGet)
 
 	// Get suggestion from store
 	suggestion := store.Get(suggestionID)
@@ -296,11 +457,22 @@ func handleGetSuggestion(w http.ResponseWriter, r *http.Request) {
 	// Delete this suggestion from store (already retrieved)
 	store.Delete(suggestionID)
 
-	logger.Info("Returning stored suggestion",
+	storeKeysAfterDelete := store.Keys()
+	retrievalLogAttrs := []any{
 		"suggestion_id", suggestionID,
 		"chars", len(suggestion.Text),
+		"suggestion_text", suggestion.Text,
 		"next_suggestion_id", suggestion.NextSuggestionID,
-	)
+	}
+	if suggestion.Range != nil {
+		retrievalLogAttrs = append(retrievalLogAttrs,
+			"range_start_line", suggestion.Range.StartLine,
+			"range_end_line", suggestion.Range.EndLine)
+	}
+	logger.Info("Returning stored suggestion", retrievalLogAttrs...)
+	logger.Debug("Store state after deletion",
+		"total_suggestions_in_store", len(storeKeysAfterDelete),
+		"store_keys", storeKeysAfterDelete)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
@@ -321,7 +493,7 @@ func main() {
 
 	// Create JSON handler for structured logging
 	logger = slog.New(slog.NewJSONHandler(logFile, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: slog.LevelDebug, // Include debug logs
 	}))
 
 	cursorClient, err = cursor.NewClient()
