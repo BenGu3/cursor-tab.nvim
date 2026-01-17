@@ -8,8 +8,7 @@ Brings Cursor's AI-powered tab completion to Neovim. Get code suggestions as you
 
 **System:**
 - **macOS only** (reads Cursor's auth from macOS-specific paths)
-- Go 1.21+ to build the server
-- curl (for HTTP requests)
+- curl (for HTTP requests and binary download)
 - sqlite3 (to read Cursor credentials)
 
 **Critical:**
@@ -24,18 +23,18 @@ Without Cursor installed and authenticated, the plugin won't work.
 ```lua
 {
   "bengu3/cursor-tab.nvim",
-  build = "make build",
   config = function()
     require("cursor-tab").setup()
   end,
 }
 ```
 
+The plugin will automatically download the appropriate binary for your platform on first run.
+
 ### packer.nvim
 ```lua
 use {
   "bengu3/cursor-tab.nvim",
-  run = "make build",
   config = function()
     require("cursor-tab").setup()
   end
@@ -46,25 +45,37 @@ use {
 ```vim
 Plug 'bengu3/cursor-tab.nvim'
 ```
-Then run `:!make build` in the plugin directory.
-
-### Manual
-```bash
-git clone https://github.com/bengu3/cursor-tab.nvim ~/.config/nvim/pack/plugins/start/cursor-tab.nvim
-cd ~/.config/nvim/pack/plugins/start/cursor-tab.nvim
-make build
-```
 
 Add to `init.lua`:
 ```lua
 require("cursor-tab").setup()
 ```
 
+### Manual Binary Installation
+
+If auto-download fails, you can manually install:
+1. Download the binary for your platform from [Releases](https://github.com/bengu3/cursor-tab.nvim/releases/latest)
+2. Place it at `~/.local/share/nvim/lazy/cursor-tab.nvim/bin/cursor-tab-server` (or equivalent path for your plugin manager)
+3. Make it executable: `chmod +x path/to/cursor-tab-server`
+
+Or run `:CursorTabInstall` in Neovim to retry auto-installation.
+
 ### Custom Server Path (Optional)
 ```lua
 require("cursor-tab").setup({
   server_path = "/custom/path/to/cursor-tab-server"
 })
+```
+
+### Building from Source (Optional)
+
+If you prefer to build from source:
+
+```bash
+# Requirements: Go 1.21+, buf CLI, make
+git clone https://github.com/bengu3/cursor-tab.nvim ~/.config/nvim/pack/plugins/start/cursor-tab.nvim
+cd ~/.config/nvim/pack/plugins/start/cursor-tab.nvim
+make build
 ```
 
 ## Usage

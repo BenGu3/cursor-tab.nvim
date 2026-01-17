@@ -21,9 +21,17 @@ function M.setup(opts)
 	opts = opts or {}
 
 	if not opts.server_path then
+		local installer = require("cursor-tab.installer")
 		local source = debug.getinfo(1, "S").source
 		local plugin_dir = vim.fn.fnamemodify(source:sub(2), ":h:h")
-		M.server_path = plugin_dir .. "/bin/cursor-tab-server"
+
+		-- Try to ensure binary exists (download if needed)
+		if not installer.ensure_binary(plugin_dir) then
+			vim.notify("cursor-tab: Failed to install server binary. Try running :CursorTabInstall", vim.log.levels.ERROR)
+			return
+		end
+
+		M.server_path = installer.get_binary_path(plugin_dir)
 	else
 		M.server_path = opts.server_path
 	end
@@ -85,6 +93,20 @@ function M.setup(opts)
 			return { "toggle", "enable", "disable" }
 		end,
 	})
+
+	vim.api.nvim_create_user_command("CursorTabInstall", function()
+		local installer = require("cursor-tab.installer")
+		local source = debug.getinfo(1, "S").source
+		local plugin_dir = vim.fn.fnamemodify(source:sub(2), ":h:h")
+
+		installer.download_binary(plugin_dir, function(success)
+			if success then
+				vim.notify("cursor-tab: Installation complete. Restart Neovim.", vim.log.levels.INFO)
+			else
+				vim.notify("cursor-tab: Installation failed", vim.log.levels.ERROR)
+			end
+		end)
+	end, {})
 end
 
 function M.ensure_server()
