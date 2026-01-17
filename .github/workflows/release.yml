@@ -45,8 +45,8 @@ jobs:
       - name: Generate protobuf code
         run: make generate
 
-      - name: Download Go dependencies
-        run: go mod download
+      - name: Tidy Go dependencies
+        run: go mod tidy
 
       - name: Build binary for ${{ matrix.platform }}
         env:
