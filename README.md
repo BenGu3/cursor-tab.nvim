@@ -78,12 +78,6 @@ cd ~/.config/nvim/pack/plugins/start/cursor-tab.nvim
 make build
 ```
 
-## Usage
+## Config
 
-1. Open any file in Neovim
-2. Start typing in insert mode
-3. After ~150ms, AI suggestion appears as dimmed text
-4. Press `<Tab>` to accept, or keep typing to dismiss
-5. Use `:CursorTab toggle` to enable/disable
-
-That's it! The Go server starts automatically in the background.
+1. Use `:CursorTab toggle` to enable/disable
