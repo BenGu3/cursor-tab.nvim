@@ -8,6 +8,7 @@ M.current_col = nil
 M.accepting = false
 M.server_url = nil
 M.server_port = nil
+M.debug = false
 M.server_ready = false
 M.server_path = nil
 M.server_job = nil
@@ -84,13 +85,16 @@ function M.setup(opts)
 			M.enabled = false
 			M.clear_suggestion()
 			vim.notify("CursorTab disabled", vim.log.levels.INFO)
+		elseif args.args == "debug" then
+			M.debug = not M.debug
+			vim.notify("CursorTab debug " .. (M.debug and "on" or "off"), vim.log.levels.INFO)
 		else
-			vim.notify("Usage: :CursorTab [toggle|enable|disable]", vim.log.levels.ERROR)
+			vim.notify("Usage: :CursorTab [toggle|enable|disable|debug]", vim.log.levels.ERROR)
 		end
 	end, {
 		nargs = 1,
 		complete = function()
-			return { "toggle", "enable", "disable" }
+			return { "toggle", "enable", "disable", "debug" }
 		end,
 	})
 
@@ -188,7 +192,7 @@ function M.get_suggestion(suggestion_id, callback)
 
 	if suggestion_id then
 		-- GET existing suggestion from store
-		print("[cursor-tab] get_suggestion called with ID: " .. suggestion_id)
+		if M.debug then print("[cursor-tab] get_suggestion called with ID: " .. suggestion_id) end
 		M.pending_job = vim.fn.jobstart({
 			"curl",
 			"-s",
@@ -300,7 +304,7 @@ function M.show_suggestion(suggestion_id)
 
 	-- If suggestion_id provided, get next suggestion immediately without debouncing
 	if suggestion_id then
-		print("[cursor-tab] show_suggestion called with ID: " .. suggestion_id)
+		if M.debug then print("[cursor-tab] show_suggestion called with ID: " .. suggestion_id) end
 		M.get_suggestion(suggestion_id, function(suggestion, range_replace, next_suggestion_id, should_remove_leading_eol)
 			if not suggestion then
 				return
@@ -651,13 +655,13 @@ function M.accept_suggestion()
 
 		-- If there's a next suggestion, immediately show it
 		if next_suggestion_id then
-			print("[cursor-tab] Scheduling next suggestion: " .. next_suggestion_id)
+			if M.debug then print("[cursor-tab] Scheduling next suggestion: " .. next_suggestion_id) end
 			vim.defer_fn(function()
-				print("[cursor-tab] Showing next suggestion: " .. next_suggestion_id)
+				if M.debug then print("[cursor-tab] Showing next suggestion: " .. next_suggestion_id) end
 				M.show_suggestion(next_suggestion_id)
 			end, 10)
 		else
-			print("[cursor-tab] No next suggestion, done with chain")
+			if M.debug then print("[cursor-tab] No next suggestion, done with chain") end
 			M.accepting = false
 		end
 	end)
